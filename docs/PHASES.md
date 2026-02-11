@@ -128,4 +128,3 @@ This document outlines the major phases for building CustomerSignal and what eac
 - Optional anomaly detection on metrics (e.g., simple statistical alerts).
 
 **Output:** A richer, more robust platform with features you can showcase in interviews and on your resume.
-

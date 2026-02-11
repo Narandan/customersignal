@@ -257,4 +257,3 @@ This trade-off improves throughput and resilience by decoupling the ingestion pa
   - DLQs, advanced metrics, tracing, and optional anomaly detection.
 
 ---
-
