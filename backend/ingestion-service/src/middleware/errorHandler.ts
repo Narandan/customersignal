@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { ValidationError } from "../services/validation";
+import { KafkaPublishError } from "../errors/KafkaPublishError"; // ✅ new
 
 interface ErrorResponseBody {
   error: {
@@ -28,6 +29,18 @@ export function errorHandler(
     return;
   }
 
+  // ✅ new: Kafka-specific error handling
+  if (err instanceof KafkaPublishError) {
+    res.status(err.statusCode).json({
+      error: {
+        code: err.code,
+        message: err.message,
+        details: err.details
+      }
+    });
+    return;
+  }
+
   // TODO: later we can handle auth, Kafka, etc., with specific error classes
 
   res.status(500).json({
@@ -37,3 +50,4 @@ export function errorHandler(
     }
   });
 }
+

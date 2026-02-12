@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { validateSingleEvent, validateBatchEvents } from "../services/validation";
+import { getKafkaProducer } from "../lib/kafka";
+import { KafkaPublishError } from "../errors/KafkaPublishError";
 
 export const eventsRouter = Router();
 
@@ -9,27 +11,70 @@ export const eventsRouter = Router();
  */
 eventsRouter.post(
   "/",
-  (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
+    // 1️⃣ First: run validation in its own try/catch
+    let validatedEvent;
     try {
-      const validatedEvent = validateSingleEvent(req.body);
+      validatedEvent = validateSingleEvent(req.body);
+    } catch (err) {
+      // Let the global errorHandler handle ValidationError (and others) correctly
+      return next(err);
+    }
 
-      // TODO: derive tenant_id from API key rather than trusting the body
-      // TODO: produce to Kafka instead of console.log
+    // Then: Kafka publishing in a separate try/catch
+    try {
+      const tenantId = validatedEvent.tenant_id;
+      if (!tenantId) {
+        // Should be guaranteed by validation, but keep a safety net
+        throw new KafkaPublishError("Missing tenant_id for Kafka message key", {
+          event: validatedEvent
+        });
+      }
 
-      console.log("[events] accepted single event:", {
+      const producer = getKafkaProducer();
+      const topic = "events_raw"; // can move to env later
+
+      const enrichedEvent = {
+        ...validatedEvent,
+        _meta: {
+          received_at: new Date().toISOString(),
+          source: "ingestion-service"
+        }
+      };
+
+      await producer.send({
+        topic,
+        messages: [
+          {
+            key: tenantId,
+            value: JSON.stringify(enrichedEvent)
+          }
+        ]
+      });
+
+      console.log("[events] published single event to Kafka:", {
         event_type: validatedEvent.event_type,
         timestamp: validatedEvent.timestamp,
         tenant_id: validatedEvent.tenant_id,
         project_id: validatedEvent.project_id
       });
 
-      // In future: generate event_id, trace_id, etc.
-      res.status(202).json({
+      return res.status(202).json({
         status: "accepted",
-        source: "ingestion-service"
+        source: "ingestion-service",
+        queued: true
       });
     } catch (err) {
-      next(err);
+      if (err instanceof KafkaPublishError) {
+        return next(err);
+      }
+
+      console.error("[events] Kafka publish error:", err);
+      return next(
+        new KafkaPublishError("Failed to publish event to Kafka", {
+          originalError: (err as Error).message
+        })
+      );
     }
   }
 );
@@ -37,26 +82,76 @@ eventsRouter.post(
 /**
  * POST /v1/events/batch
  * Ingest a batch of events.
+ * (Still stubbed: just validates + logs, no Kafka yet.)
+ */
+/**
+ * POST /v1/events/batch
+ * Ingest a batch of events.
  */
 eventsRouter.post(
   "/batch",
-  (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
+    // Validate first
+    let validated;
     try {
-      const { events } = validateBatchEvents(req.body);
+      validated = validateBatchEvents(req.body);
+    } catch (err) {
+      return next(err);
+    }
 
-      console.log("[events] accepted batch:", {
-        count: events.length
+    const { events } = validated;
+
+    // Publish to Kafka
+    try {
+      const producer = getKafkaProducer();
+      const topic = "events_raw";
+
+      const messages = events.map((event) => {
+        if (!event.tenant_id) {
+          throw new KafkaPublishError(
+            "Missing tenant_id for Kafka message key",
+            { event }
+          );
+        }
+
+        return {
+          key: event.tenant_id,
+          value: JSON.stringify({
+            ...event,
+            _meta: {
+              received_at: new Date().toISOString(),
+              source: "ingestion-service"
+            }
+          })
+        };
       });
 
-      // TODO: publish each event to Kafka
+      await producer.send({
+        topic,
+        messages
+      });
 
-      res.status(202).json({
+      console.log("[events] published batch to Kafka:", {
+        count: messages.length
+      });
+
+      return res.status(202).json({
         status: "accepted",
-        accepted: events.length,
+        accepted: messages.length,
         failed: 0
       });
+
     } catch (err) {
-      next(err);
+      if (err instanceof KafkaPublishError) {
+        return next(err);
+      }
+
+      console.error("[events] Kafka batch publish error:", err);
+      return next(
+        new KafkaPublishError("Failed to publish batch to Kafka", {
+          originalError: (err as Error).message
+        })
+      );
     }
   }
 );
